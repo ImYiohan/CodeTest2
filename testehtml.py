@@ -1,24 +1,23 @@
-/projeto
-│── app.py
-│── templates/
-│   │── index.html
-│   │── configuracoes.html
-│   └── recuperacao.html
-│── static/
-│   └── style.css
-│── usuarios.db
-
+import os
 import sqlite3
-from flask import Flask, render_template, request, redirect, url_for
+import secrets
+from flask import Flask, render_template, request, redirect, url_for, flash
 
 app = Flask(__name__)
+app.secret_key = "super_secret_key"
+
+# Caminho do banco de dados
+DB_PATH = os.path.join(os.getcwd(), "usuarios.db")
 
 def criar_banco():
-    conexao = sqlite3.connect("usuarios.db")
+    conexao = sqlite3.connect(DB_PATH)
     cursor = conexao.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (
                         nome TEXT PRIMARY KEY,
                         senha TEXT NOT NULL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tokens (
+                        nome TEXT PRIMARY KEY,
+                        token TEXT NOT NULL)''')
     
     usuarios = [
         ("Gabriel", "Sweet3733"),
@@ -27,10 +26,17 @@ def criar_banco():
         ("Erik", "solaris"),
         ("Leonardo", "licaria")
     ]
-    
     cursor.executemany("INSERT OR IGNORE INTO usuarios (nome, senha) VALUES (?, ?)", usuarios)
     conexao.commit()
     conexao.close()
+
+def verificar_usuario(nome, senha):
+    conexao = sqlite3.connect(DB_PATH)
+    cursor = conexao.cursor()
+    cursor.execute("SELECT * FROM usuarios WHERE nome = ? AND senha = ?", (nome, senha))
+    usuario = cursor.fetchone()
+    conexao.close()
+    return usuario is not None
 
 @app.route("/")
 def index():
@@ -42,15 +48,8 @@ def login():
     senha = request.form["senha"]
     if verificar_usuario(nome, senha):
         return redirect(url_for("configuracoes"))
-    return "Nome de usuário ou senha incorretos."
-
-def verificar_usuario(nome, senha):
-    conexao = sqlite3.connect("usuarios.db")
-    cursor = conexao.cursor()
-    cursor.execute("SELECT * FROM usuarios WHERE nome = ? AND senha = ?", (nome, senha))
-    usuario = cursor.fetchone()
-    conexao.close()
-    return usuario is not None
+    flash("Nome de usuário ou senha incorretos.")
+    return redirect(url_for("index"))
 
 @app.route("/configuracoes")
 def configuracoes():
@@ -60,79 +59,44 @@ def configuracoes():
 def recuperacao():
     if request.method == "POST":
         nome = request.form["nome"]
-        nova_senha = request.form["nova_senha"]
-        conexao = sqlite3.connect("usuarios.db")
+        conexao = sqlite3.connect(DB_PATH)
         cursor = conexao.cursor()
-        cursor.execute("UPDATE usuarios SET senha = ? WHERE nome = ?", (nova_senha, nome))
-        conexao.commit()
+        cursor.execute("SELECT * FROM usuarios WHERE nome = ?", (nome,))
+        usuario = cursor.fetchone()
+        if usuario:
+            token = secrets.token_hex(8)
+            cursor.execute("INSERT OR REPLACE INTO tokens (nome, token) VALUES (?, ?)", (nome, token))
+            conexao.commit()
+            flash(f"Use este token para redefinir sua senha: {token}")
+        else:
+            flash("Usuário não encontrado.")
         conexao.close()
-        return "Senha alterada com sucesso!"
+        return redirect(url_for("recuperacao"))
     return render_template("recuperacao.html")
+
+@app.route("/reset_senha", methods=["POST"])
+def reset_senha():
+    nome = request.form["nome"]
+    token = request.form["token"]
+    nova_senha = request.form["nova_senha"]
+    
+    conexao = sqlite3.connect(DB_PATH)
+    cursor = conexao.cursor()
+    cursor.execute("SELECT * FROM tokens WHERE nome = ? AND token = ?", (nome, token))
+    token_valido = cursor.fetchone()
+    
+    if token_valido:
+        cursor.execute("UPDATE usuarios SET senha = ? WHERE nome = ?", (nova_senha, nome))
+        cursor.execute("DELETE FROM tokens WHERE nome = ?", (nome,))
+        conexao.commit()
+        flash("Senha redefinida com sucesso!")
+    else:
+        flash("Token inválido ou expirado.")
+    
+    conexao.close()
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     criar_banco()
-    app.run(debug=True)
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Login</title>
-</head>
-<body>
-    <h2>Login</h2>
-    <form action="/login" method="post">
-        Nome: <input type="text" name="nome" required><br>
-        Senha: <input type="password" name="senha" required><br>
-        <input type="submit" value="Entrar">
-    </form>
-    <a href="/recuperacao">Esqueceu sua senha?</a>
-</body>
-</html>
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Configurações</title>
-</head>
-<body>
-    <h2>Bem-vindo às Configurações</h2>
-    <p>Aqui você pode modificar suas preferências.</p>
-    <a href="/">Sair</a>
-</body>
-</html>
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Recuperação de Conta</title>
-</head>
-<body>
-    <h2>Recuperação de Conta</h2>
-    <form action="/recuperacao" method="post">
-        Nome: <input type="text" name="nome" required><br>
-        Nova Senha: <input type="password" name="nova_senha" required><br>
-        <input type="submit" value="Alterar Senha">
-    </form>
-</body>
-</html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-github
-
-
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
